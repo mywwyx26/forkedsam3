@@ -1,0 +1,202 @@
+# @package _global_
+defaults:
+  - _self_
+
+paths:
+  experiment_log_dir: C:/Users/keleslab/sam3/exp_runs/fly_ft
+  bpe_path: C:/Users/keleslab/sam3/sam3/assets/bpe_simple_vocab_16e6.txt.gz
+  train_json: C:/Users/keleslab/sam3/flyannotations/annotations/instances_train.json
+  val_json: C:/Users/keleslab/sam3/flyannotations/annotations/instances_val.json
+  images_root: C:/Users/keleslab/sam3/flyannotations/images/default
+  checkpoint_path: null
+
+scratch:
+
+  resolution: 1008
+  train_norm_mean: [0.5, 0.5, 0.5]
+  train_norm_std: [0.5, 0.5, 0.5]
+  val_norm_mean: [0.5, 0.5, 0.5]
+  val_norm_std: [0.5, 0.5, 0.5]
+
+trainer:
+  _target_: sam3.train.trainer.Trainer
+  mode: train
+  max_epochs: 20
+  accelerator: cuda
+  seed_value: 123
+  distributed:
+    backend: gloo
+
+  model:
+    _target_: sam3.model_builder.build_sam3_image_model
+    bpe_path: ${paths.bpe_path}
+    checkpoint_path: ${paths.checkpoint_path}
+    enable_segmentation: truewhtgya 
+    eval_mode: false
+    num_interactive_steps_val: 0
+
+
+  loss:
+    default:
+      _target_: sam3.train.loss.sam3_loss.Sam3LossWrapper
+      matcher:
+        _target_: sam3.train.matcher.BinaryHungarianMatcherV2
+        focal: true
+        cost_class: 2.0
+        cost_bbox: 5.0
+        cost_giou: 2.0
+        alpha: 0.25
+        gamma: 2
+        stable: False
+      o2m_weight: 2.0
+      o2m_matcher:
+        _target_: sam3.train.matcher.BinaryOneToManyMatcher
+        alpha: 0.3
+        threshold: 0.4
+        topk: 4
+      use_o2m_matcher_on_o2m_aux: false
+      loss_fns_find:
+        - _target_: sam3.train.loss.loss_fns.Boxes
+          weight_dict: { loss_bbox: 5.0, loss_giou: 2.0 }
+        - _target_: sam3.train.loss.loss_fns.IABCEMdetr
+          weak_loss: False
+          weight_dict: { loss_ce: 20.0, presence_loss: 20.0 }
+          pos_weight: 10.0
+          alpha: 0.25
+          gamma: 2
+          use_presence: True
+          pad_n_queries: 200
+          pad_scale_pos: 1.0
+        - _target_: sam3.train.loss.loss_fns.Masks
+          focal_alpha: 0.25
+          focal_gamma: 2.0
+          weight_dict: { loss_mask: 200.0, loss_dice: 10.0 }
+          compute_aux: false
+      loss_fn_semantic_seg: null
+      
+  optim:
+    amp:
+      enabled: true
+      amp_dtype: bfloat16  # change to float16 if bfloat16 not supported
+    optimizer:
+      _target_: torch.optim.AdamW
+      lr: 1e-4
+      weight_decay: 0.05
+    options:
+      lr:
+        - scheduler:
+            _target_: fvcore.common.param_scheduler.ConstantParamScheduler
+            value: 1e-4
+
+  checkpoint:
+    save_dir: ${launcher.experiment_log_dir}/checkpoints
+    save_freq: 0  # 0 = only last checkpoint
+
+  logging:
+    tensorboard_writer:
+      _target_: sam3.train.utils.logger.make_tensorboard_logger
+      log_dir: ${launcher.experiment_log_dir}/tensorboard
+      flush_secs: 120
+      should_log: true
+    wandb_writer: null
+    log_dir: ${launcher.experiment_log_dir}/logs
+    log_freq: 10
+   
+
+  
+
+  data:
+    train:
+      _target_: sam3.train.data.torch_dataset.TorchDataset
+      dataset:
+        _target_: sam3.train.data.sam3_image_dataset.Sam3ImageDataset
+        img_folder: ${paths.images_root}
+        ann_file: ${paths.train_json}
+        max_ann_per_img: 100
+        multiplier: 1
+        coco_json_loader:
+          _target_: sam3.train.data.coco_json_loaders.COCO_FROM_JSON
+          _partial_: true
+        transforms:
+          - _target_: sam3.train.transforms.basic_for_api.ComposeAPI
+            transforms:
+              - _target_: sam3.train.transforms.segmentation.DecodeRle
+              - _target_: sam3.train.transforms.basic_for_api.RandomResizeAPI
+                sizes: ${scratch.resolution}
+                square: true
+                consistent_transform: false
+              - _target_: sam3.train.transforms.basic_for_api.ToTensorAPI
+              - _target_: sam3.train.transforms.basic_for_api.NormalizeAPI
+                mean: ${scratch.train_norm_mean}
+                std: ${scratch.train_norm_std}
+        load_segmentation: true
+        training: true
+      shuffle: True
+      batch_size: 1
+      num_workers: 4
+      pin_memory: True
+      drop_last: True
+      collate_fn:
+        _target_: sam3.train.data.collator.collate_fn_api
+        _partial_: true
+        repeats: 1
+        dict_key: default
+        with_seg_masks: true
+
+    val:
+      _target_: sam3.train.data.torch_dataset.TorchDataset
+      dataset:
+        _target_: sam3.train.data.sam3_image_dataset.Sam3ImageDataset
+        img_folder: ${paths.images_root}
+        ann_file: ${paths.val_json}
+        max_ann_per_img: 100
+        multiplier: 1
+        coco_json_loader:
+          _target_: sam3.train.data.coco_json_loaders.COCO_FROM_JSON
+          _partial_: true
+       
+        transforms:
+          - _target_: sam3.train.transforms.basic_for_api.ComposeAPI
+            transforms:
+              - _target_: sam3.train.transforms.segmentation.DecodeRle
+              - _target_: sam3.train.transforms.basic_for_api.RandomResizeAPI
+                sizes: ${scratch.resolution}
+                square: true
+                consistent_transform: false
+              - _target_: sam3.train.transforms.basic_for_api.ToTensorAPI
+              - _target_: sam3.train.transforms.basic_for_api.NormalizeAPI
+                mean: ${scratch.val_norm_mean}
+                std: ${scratch.val_norm_std}
+        load_segmentation: true
+        training: false
+      shuffle: False
+      batch_size: 1
+      num_workers: 2
+      pin_memory: True
+      drop_last: False
+      collate_fn:
+        _target_: sam3.train.data.collator.collate_fn_api
+        _partial_: true
+        repeats: 1
+        dict_key: default
+        with_seg_masks: true
+
+      
+
+launcher:
+  num_nodes: 1
+  gpus_per_node: 1
+  experiment_log_dir: ${paths.experiment_log_dir}
+  multiprocessing_context: forkserver
+
+submitit:
+  account: null
+  partition: null
+  qos: null
+  timeout_hour: 72
+  use_cluster: false
+  cpus_per_task: 10
+  port_range: [10000, 65000]
+  constraint: null
+
+        

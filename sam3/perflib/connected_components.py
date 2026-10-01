@@ -17,9 +17,29 @@ except ImportError:
 
 def connected_components_cpu_single(values: torch.Tensor):
     assert values.dim() == 2
-    from skimage.measure import label
+    values_np = values.to(device="cpu").numpy()
 
-    labels, num = label(values.cpu().numpy(), return_num=True)
+    # Prefer scikit-image when available.
+    try:
+        from skimage.measure import label  # type: ignore
+
+        labels, num = label(values_np, return_num=True)
+    except Exception:
+        # Fall back to OpenCV (commonly available in this project via video I/O).
+        try:
+            import cv2  # type: ignore
+
+            # OpenCV expects 0/1 or 0/255 uint8 for binary masks.
+            values_u8 = (values_np != 0).astype("uint8")
+            num, labels = cv2.connectedComponents(values_u8, connectivity=8)
+            # OpenCV counts background as label 0.
+            num = int(num) - 1
+        except Exception as e:
+            raise ImportError(
+                "No CPU connected-components backend found. Install one of: "
+                "'scikit-image' (recommended) or ensure 'opencv-python' is installed."
+            ) from e
+
     labels = torch.from_numpy(labels)
     counts = torch.zeros_like(labels)
     for i in range(1, num + 1):
@@ -73,12 +93,23 @@ def connected_components(input_tensor: torch.Tensor):
         if HAS_CC_TORCH:
             return get_connected_components(input_tensor.to(torch.uint8))
         else:
-            # triton fallback
-            from sam3.perflib.triton.connected_components import (
-                connected_components_triton,
-            )
+            # Triton fallback (optional). On some platforms (e.g., Windows), Triton may
+            # not be available; in that case, fall back to CPU.
+            try:
+                from sam3.perflib.triton.connected_components import (
+                    connected_components_triton,
+                )
 
-            return connected_components_triton(input_tensor)
+                return connected_components_triton(input_tensor)
+            except Exception as e:
+                logging.warning(
+                    "Triton connected-components backend is unavailable (%s). "
+                    "Falling back to CPU connected components. For better performance, "
+                    "install 'cc_torch' or use a platform that supports Triton.",
+                    type(e).__name__,
+                )
+                labels_cpu, counts_cpu = connected_components_cpu(input_tensor.detach().cpu())
+                return labels_cpu.to(input_tensor.device), counts_cpu.to(input_tensor.device)
 
     # CPU fallback
     return connected_components_cpu(input_tensor)

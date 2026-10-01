@@ -5,8 +5,6 @@ import torch
 import torch.nn.functional as F
 from numpy.typing import NDArray
 
-from sam3.model.edt import edt_triton
-
 
 def sample_box_points(
     masks: torch.Tensor,
@@ -175,8 +173,15 @@ def sample_one_point_from_error_center(gt_masks, pred_masks, padding=True):
         padded_fp_masks = fp_masks
         padded_fn_masks = fn_masks
 
-    fn_mask_dt = edt_triton(padded_fn_masks)
-    fp_mask_dt = edt_triton(padded_fp_masks)
+    # Triton is not available in many Windows environments. Prefer the Triton
+    # implementation when possible, otherwise fall back to the OpenCV CPU path.
+    try:
+        from sam3.model.edt import edt_triton
+
+        fn_mask_dt = edt_triton(padded_fn_masks)
+        fp_mask_dt = edt_triton(padded_fp_masks)
+    except ModuleNotFoundError:
+        return sample_one_point_from_error_center_slow(gt_masks, pred_masks, padding=padding)
     if padding:
         fn_mask_dt = fn_mask_dt[:, 1:-1, 1:-1]
         fp_mask_dt = fp_mask_dt[:, 1:-1, 1:-1]

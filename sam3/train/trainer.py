@@ -303,6 +303,12 @@ class Trainer:
     def _setup_ddp_distributed_training(self, distributed_conf, accelerator):
         assert isinstance(self.model, torch.nn.Module)
 
+        #Skip DDP on Windows single-GPU (gloo + cuda is not supported)
+        world_size = int(os.environ.get("WORLD_SIZE", "1"))
+        if accelerator == "cuda" and distributed_conf.backend == "gloo" and world_size == 1:
+            logging.info("Skipping DDP: gloo backend does not support CUDA tensors on Windows.")
+            return
+
         self.model = nn.parallel.DistributedDataParallel(
             self.model,
             device_ids=[self.local_rank] if accelerator == "cuda" else [],
@@ -310,6 +316,7 @@ class Trainer:
             gradient_as_bucket_view=distributed_conf.gradient_as_bucket_view,
             static_graph=distributed_conf.static_graph,
         )
+
         if distributed_conf.comms_dtype is not None:  # noqa
             from torch.distributed.algorithms import ddp_comm_hooks
 

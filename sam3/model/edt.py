@@ -1,10 +1,22 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates. All Rights Reserved
 
-"""Triton kernel for euclidean distance transform (EDT)"""
+"""Triton kernel for euclidean distance transform (EDT)
+
+Note: Triton is not available in many Windows environments. We keep this module importable
+without Triton, and raise a clear error if the Triton implementation is called.
+"""
 
 import torch
-import triton
-import triton.language as tl
+
+try:
+    import triton  # type: ignore
+    import triton.language as tl  # type: ignore
+
+    _TRITON_AVAILABLE = True
+except ModuleNotFoundError:  # pragma: no cover
+    triton = None
+    tl = None
+    _TRITON_AVAILABLE = False
 
 """
 Disclaimer: This implementation is not meant to be extremely efficient. A CUDA kernel would likely be more efficient.
@@ -49,24 +61,25 @@ Overall, despite being quite naive, this implementation is roughly 5.5x faster t
 
 """
 
+if _TRITON_AVAILABLE:
 
-@triton.jit
-def edt_kernel(inputs_ptr, outputs_ptr, v, z, height, width, horizontal: tl.constexpr):
-    # This is a somewhat verbatim implementation of the efficient 1D EDT algorithm described above
-    # It can be applied horizontally or vertically depending if we're doing the first or second stage.
-    # It's parallelized across batch+row (or batch+col if horizontal=False)
-    # TODO: perhaps the implementation can be revisited if/when local gather/scatter become available in triton
-    batch_id = tl.program_id(axis=0)
-    if horizontal:
-        row_id = tl.program_id(axis=1)
-        block_start = (batch_id * height * width) + row_id * width
-        length = width
-        stride = 1
-    else:
-        col_id = tl.program_id(axis=1)
-        block_start = (batch_id * height * width) + col_id
-        length = height
-        stride = width
+    @triton.jit
+    def edt_kernel(inputs_ptr, outputs_ptr, v, z, height, width, horizontal: tl.constexpr):
+        # This is a somewhat verbatim implementation of the efficient 1D EDT algorithm described above
+        # It can be applied horizontally or vertically depending if we're doing the first or second stage.
+        # It's parallelized across batch+row (or batch+col if horizontal=False)
+        # TODO: perhaps the implementation can be revisited if/when local gather/scatter become available in triton
+        batch_id = tl.program_id(axis=0)
+        if horizontal:
+            row_id = tl.program_id(axis=1)
+            block_start = (batch_id * height * width) + row_id * width
+            length = width
+            stride = 1
+        else:
+            col_id = tl.program_id(axis=1)
+            block_start = (batch_id * height * width) + col_id
+            length = height
+            stride = width
 
     # This will be the index of the right most parabola in the envelope ("the top of the stack")
     k = 0
@@ -125,6 +138,10 @@ def edt_triton(data: torch.Tensor):
         A tensor of the same shape as data containing the EDT.
         It should be equivalent to a batched version of cv2.distanceTransform(input, cv2.DIST_L2, 0)
     """
+    if not _TRITON_AVAILABLE:
+        raise ModuleNotFoundError(
+            "triton is not installed; edt_triton is unavailable in this environment"
+        )
     assert data.dim() == 3
     assert data.is_cuda
     B, H, W = data.shape

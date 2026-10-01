@@ -573,6 +573,13 @@ class Sam3Image(torch.nn.Module):
             stage_outs.append(out)
 
         previous_stages_out.append(stage_outs)
+
+        if self.matcher is not None and not self.training:
+            targets = self.back_convert(find_target)
+            for step_out in stage_outs:
+                self._compute_matching(step_out, targets)
+
+
         return previous_stages_out
 
     def _compute_matching(self, out, targets):

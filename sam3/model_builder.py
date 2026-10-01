@@ -295,6 +295,7 @@ def _create_sam3_model(
     dot_prod_scoring,
     inst_interactive_predictor,
     eval_mode,
+    num_interactive_steps_val=0,
 ):
     """Create the SAM3 image model."""
     common_params = {
@@ -308,6 +309,8 @@ def _create_sam3_model(
         "use_instance_query": False,
         "multimask_output": True,
         "inst_interactive_predictor": inst_interactive_predictor,
+        "num_interactive_steps_val": num_interactive_steps_val,
+
     }
 
     matcher = None
@@ -528,17 +531,23 @@ def _load_checkpoint(model, checkpoint_path):
         ckpt = torch.load(f, map_location="cpu", weights_only=True)
     if "model" in ckpt and isinstance(ckpt["model"], dict):
         ckpt = ckpt["model"]
-    sam3_image_ckpt = {
-        k.replace("detector.", ""): v for k, v in ckpt.items() if "detector" in k
-    }
-    if model.inst_interactive_predictor is not None:
-        sam3_image_ckpt.update(
-            {
-                k.replace("tracker.", "inst_interactive_predictor.model."): v
-                for k, v in ckpt.items()
-                if "tracker" in k
-            }
-        )
+    has_wrapped_keys = any(
+        k.startswith("detector.") or k.startswith("tracker.") for k in ckpt.keys()
+    )
+    if has_wrapped_keys:
+        sam3_image_ckpt = {
+            k.replace("detector.", ""): v for k, v in ckpt.items() if "detector" in k
+        }
+        if model.inst_interactive_predictor is not None:
+            sam3_image_ckpt.update(
+                {
+                    k.replace("tracker.", "inst_interactive_predictor.model."): v
+                    for k, v in ckpt.items()
+                    if "tracker" in k
+                }
+            )
+    else:
+        sam3_image_ckpt = ckpt
     missing_keys, _ = model.load_state_dict(sam3_image_ckpt, strict=False)
     if len(missing_keys) > 0:
         print(
@@ -565,6 +574,7 @@ def build_sam3_image_model(
     enable_segmentation=True,
     enable_inst_interactivity=False,
     compile=False,
+    num_interactive_steps_val=0,
 ):
     """
     Build SAM3 image model
@@ -627,6 +637,7 @@ def build_sam3_image_model(
         dot_prod_scoring,
         inst_predictor,
         eval_mode,
+        num_interactive_steps_val=num_interactive_steps_val,
     )
     if load_from_HF and checkpoint_path is None:
         checkpoint_path = download_ckpt_from_hf()
